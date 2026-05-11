@@ -1,0 +1,10 @@
+[project]
+name = "a1-docs-analysis"
+version = "0.1.0"
+description = "Analysis scripts for the A1 Compton scattering notes"
+requires-python = ">=3.11"
+dependencies = [
+  "matplotlib>=3.10",
+  "numpy>=2.0",
+  "scipy>=1.14",
+]

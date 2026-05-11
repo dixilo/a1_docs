@@ -6,4 +6,6 @@
 *.out
 *.pdf
 *.synctex.gz
+.venv/
 /work/
+!figures/photopeak-fit-137Cs-nai.pdf

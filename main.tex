@@ -7,6 +7,8 @@
 \usepackage{float}
 \usepackage{framed}
 \usepackage{tikz}
+\usepackage{xcolor}
+\usepackage{listings}
 \usepackage[dvipdfmx]{hyperref}
 \usepackage{pxjahyper}
 
@@ -14,6 +16,23 @@
   colorlinks=true,
   linkcolor=blue,
   urlcolor=blue
+}
+
+\lstset{
+  language=Python,
+  basicstyle=\ttfamily\small,
+  keywordstyle=\color{blue!60!black},
+  commentstyle=\color{green!40!black},
+  stringstyle=\color{red!55!black},
+  numbers=left,
+  numberstyle=\scriptsize\color{gray},
+  stepnumber=1,
+  numbersep=0.7em,
+  frame=single,
+  breaklines=true,
+  columns=fullflexible,
+  keepspaces=true,
+  showstringspaces=false
 }
 
 %\setlength{\parindent}{1em}
@@ -369,6 +388,91 @@ CAMACクレートには複数のモジュールを挿入でき、その中にADC
 そのため、光電ピークの位置を求めたいときには、ピーク近傍をガウシアンでフィッティングする方法がよく用いられる。
 フィットによって得られる中心値は、そのエネルギーに対応するADCチャネルの代表値として使うことができる。
 また、分布の幅からはエネルギー分解能に関する情報も得られる。
+
+ここでは、\texttt{data} ディレクトリに置いたような「1行に1イベント分のADC値が並んだテキストファイル」を
+解析する例として、\texttt{src/fit\_photopeak.py} を用意した。Python環境は \texttt{uv} で作れるようにしてあり、
+たとえば $^{137}\mathrm{Cs}$ をNaIで測ったデータなら次のように実行する。
+
+\begin{verbatim}
+uv run python src/fit_photopeak.py data/data_137Cs_nai.dat \
+  --output figures/photopeak-fit-137Cs-nai.pdf \
+  --search-min 1200 --search-max 2200 \
+  --fit-half-width 180 \
+  --title "137Cs NaI photopeak fit"
+\end{verbatim}
+
+スクリプトの最初の仕事は、ADC値を読み込み、指定した幅のヒストグラムに変換することである。
+\texttt{np.histogram} は各binに入ったイベント数を返すので、以後のフィットではこのbinごとのカウント数を
+データ点として扱う。
+
+\lstinputlisting[firstline=22,lastline=40,caption={ADC値の読み込みとヒストグラム化}]{src/fit_photopeak.py}
+
+ここで注意すべき点は、ヒストグラムの縦軸が「ある一点での確率密度」ではなく
+「binの幅に入ったイベント数」だということである。したがってガウシアンをそのままbin中心で評価して
+カウント数と比較するのではなく、各binの左端 $a_i$ から右端 $b_i$ まで積分した期待値と比較する。
+面積を $A$、中心を $\mu$、標準偏差を $\sigma$ とすると、ガウシアン部分の期待カウント数は
+\begin{equation}
+  \nu_i^{\mathrm{peak}}
+  =
+  A \int_{a_i}^{b_i}
+  \frac{1}{\sqrt{2\pi}\sigma}
+  \exp\left[-\frac{(x-\mu)^2}{2\sigma^2}\right] dx
+  =
+  \frac{A}{2}
+  \left[
+  \operatorname{erf}\left(\frac{b_i-\mu}{\sqrt{2}\sigma}\right)
+  -
+  \operatorname{erf}\left(\frac{a_i-\mu}{\sqrt{2}\sigma}\right)
+  \right]
+\end{equation}
+となる。実際のピークの下にはコンプトン連続成分や背景が少し残るので、コードではこれに一次関数の背景
+$c_0+c_1(x_i-x_0)$ を足している。
+
+\lstinputlisting[firstline=43,lastline=64,caption={binごとに積分したガウシアンモデル}]{src/fit_photopeak.py}
+
+このフィットでは、$A$ だけでなく $\mu$ と $\sigma$ もデータから決める。分散は
+$\sigma^2$ として得られる。$\mu$ と $\sigma$ は
+指数関数や誤差関数の中に入っており、モデルはフィットパラメータに対して線形ではない。
+そのため、通常の直線フィットのように連立一次方程式を一度解けば終わり、とはならず、
+\texttt{scipy.optimize.curve\_fit} による非線形最小二乗フィットを使う。
+非線形フィットでは初期値が収束に影響するので、スクリプトでは次のように初期値を決めている。
+
+\begin{enumerate}
+  \renewcommand{\labelenumi}{（\arabic{enumi}）}
+  \item \texttt{--search-min} から \texttt{--search-max} の範囲で最もカウントの大きいbinを探し、そこをピーク中心の初期値にする。
+  \item その周辺 \texttt{--fit-half-width} の範囲だけをフィットに使う。
+  \item フィット範囲の両端の中央値から背景の高さと傾きを見積もる。
+  \item 背景を引いた残差の重み付き平均と分散から、$\mu$ と $\sigma$ の初期値を作る。
+  \item 背景を引いた残差の和をピーク面積 $A$ の初期値にする。
+\end{enumerate}
+
+\lstinputlisting[firstline=67,lastline=98,caption={背景を引いた残差から初期値を作る部分}]{src/fit_photopeak.py}
+
+フィット本体では、各binの統計誤差をポアソン分布のガウス近似
+$\sigma_i\simeq\sqrt{N_i}$ として与えている。ただし $N_i=0$ のbinで誤差がゼロになると重みが無限大に
+なってしまうため、コードでは \texttt{np.maximum(y, 1.0)} を使って下限を1にしている。
+また、面積や幅が負にならないように境界条件を与えている。
+
+\lstinputlisting[firstline=111,lastline=157,caption={ピーク探索と非線形フィットの実行}]{src/fit_photopeak.py}
+
+最後に、ヒストグラムとフィット後の関数を重ね描きしてPDFに保存する。
+赤線は連続的なガウス密度を描いたものではなく、表示用の細かい点ごとに
+「その幅のbinに入るはずのカウント数」を計算したものである。
+
+\lstinputlisting[firstline=191,lastline=219,caption={ヒストグラムとフィット曲線の重ね描き}]{src/fit_photopeak.py}
+
+\begin{figure}[H]
+  \centering
+  \includegraphics[width=0.74\textwidth]{figures/photopeak-fit-137Cs-nai.pdf}
+  \caption{\texttt{data/data\_137Cs\_nai.dat} の光電ピークをbin積分ガウシアンでフィットした例。}
+  \label{fig:photopeak-fit-137cs-nai}
+\end{figure}
+
+図\ref{fig:photopeak-fit-137cs-nai} の例では、中心は
+$\mu = 1727.3\pm1.1$ ch、標準偏差は $\sigma = 54.3\pm1.0$ ch と求まった。
+この中心値を、$^{137}\mathrm{Cs}$ の 661.7\,keV の光電ピークに対応するADC値として較正に用いる。
+同じ手順を他の線源や他の検出器のデータにも適用し、既知のガンマ線エネルギーとフィットされた中心値を
+対応させれば、ADCチャネルからエネルギーへの較正直線を作ることができる。
 
 \subsection{予備実験として行う測定}
 
